@@ -190,11 +190,240 @@
    190|- 通用消息总线层
    191|- 通用 Agent 平台壳
    192|
-   193|## 6. 第一版真正要自己做的模块
-   194|
-   195|只做 4 个模块。
-   196|
-   197|## 6.1 Check-in Orchestrator
+## 6. 第一版真正要自己做的模块
+
+只做 4 个模块。
+
+### 6.0 模块集成契约 (Integration Contracts)
+
+各模块间通过明确的 API 边界交互，确保松耦合和可测试性。
+
+#### CheckinOrchestrator API
+
+```python
+# src/orchestrator/contracts.py
+
+@dataclass
+class ProcessResult:
+    """Result of processing a user message."""
+    success: bool
+    new_status: SessionStatus
+    response_message: Optional[str]
+    extraction_result: Optional[ExtractionResult] = None
+    error: Optional[str] = None
+
+async def handle_message(
+    session_id: str,
+    message: str,
+    sender_type: str  # "user" | "bot"
+) -> ProcessResult:
+    """
+    Process incoming message and update session state.
+    
+    Responsibilities:
+    - Validate message against current session state
+    - Determine if extraction is needed
+    - Trigger follow-up questions if needed
+    - Update session status
+    
+    Errors:
+    - SessionNotFoundError: session_id invalid
+    - InvalidStateTransitionError: message not allowed in current state
+    """
+    pass
+
+async def initiate_session(
+    user_id: str,
+    period_key: str,
+    session_type: str
+) -> CheckinSession:
+    """
+    Start new check-in session.
+    
+    Idempotent: returns existing session if already created.
+    """
+    pass
+```
+
+#### ExtractAnalyzer API
+
+```python
+# src/extraction/contracts.py
+
+@dataclass
+class ExtractionResult:
+    """Result of extracting structured info from message."""
+    method: str  # "llm" | "regex" | "manual"
+    data: dict
+    missing_fields: list[str]
+    confidence: float  # 0.0 - 1.0
+    raw_response: Optional[str] = None
+
+@dataclass
+class RiskItem:
+    """Detected risk from message."""
+    title: str
+    description: str
+    severity: str  # "low" | "medium" | "high"
+    needs_followup: bool
+    evidence: list[str]
+
+async def extract(
+    message_text: str,
+    required_fields: list[str]
+) -> ExtractionResult:
+    """
+    Extract structured info from natural language.
+    
+    Fallback chain:
+    1. Try LLM with structured output
+    2. Fall back to regex patterns
+    3. Return empty result with missing_fields
+    
+    Errors:
+    - LLMTimeoutError: LLM call timed out
+    - LLMRateLimitError: LLM rate limited
+    """
+    pass
+
+async def analyze_risks(
+    extraction_result: ExtractionResult
+) -> list[RiskItem]:
+    """
+    Identify risk signals from extraction result.
+    
+    Returns empty list if no risks detected.
+    """
+    pass
+```
+
+#### SummaryGenerator API
+
+```python
+# src/summary/contracts.py
+
+@dataclass
+class Summary:
+    """Generated summary for a session."""
+    text: str
+    structured_json: dict
+    source_message_ids: list[str]
+    confidence: float
+
+@dataclass
+class Brief:
+    """Manager brief for 1:1 or team digest."""
+    brief_type: str  # "one_on_one" | "team_digest"
+    manager_id: str
+    target_user_id: Optional[str]
+    text: str
+    suggested_questions: list[str]
+
+async def generate_summary(
+    session_id: str
+) -> Summary:
+    """
+    Generate summary from session messages and extractions.
+    
+    Prerequisites:
+    - Session must be in collecting or risk_followup state
+    - At least one extraction must exist
+    
+    Errors:
+    - InsufficientDataError: not enough data to summarize
+    """
+    pass
+
+async def generate_brief(
+    manager_id: str,
+    target_user_id: Optional[str],
+    period_key: str,
+    brief_type: str
+) -> Brief:
+    """
+    Generate manager brief from confirmed sessions.
+    
+    For team_digest: target_user_id is None
+    For one_on_one: target_user_id is required
+    """
+    pass
+```
+
+#### DailyReviewJob API
+
+```python
+# src/review/contracts.py
+
+@dataclass
+class SessionScore:
+    """Score for a single session."""
+    session_id: str
+    completion_score: float  # 0.0 - 1.0
+    info_completeness: float
+    friction_score: float
+    summary_accuracy: float
+    overall_score: float
+
+@dataclass
+class ReviewReport:
+    """Daily review report."""
+    review_date: date
+    total_sessions: int
+    completed_sessions: int
+    high_friction_sessions: int
+    top_failure_modes: list[str]
+    optimization_suggestions: list[str]
+
+async def score_session(
+    session_id: str
+) -> SessionScore:
+    """
+    Score a single session for quality.
+    
+    Metrics:
+    - completion_score: did session reach confirmed state
+    - info_completeness: were all required fields extracted
+    - friction_score: how many追问, how long
+    - summary_accuracy: did user modify summary
+    """
+    pass
+
+async def run_daily_review(
+    review_date: date
+) -> ReviewReport:
+    """
+    Run daily review for all sessions.
+    
+    Failure isolation: single session failure does not stop batch.
+    Timeout protection: each session scored with 30s timeout.
+    """
+    pass
+```
+
+#### 模块依赖关系
+
+```
+CheckinOrchestrator
+    ├── ExtractAnalyzer (extract, analyze_risks)
+    └── SummaryGenerator (generate_summary)
+
+SummaryGenerator
+    └── (reads from DB: message_log, extraction_snapshot)
+
+DailyReviewJob
+    └── (reads from DB: checkin_session, message_log, extraction_snapshot)
+```
+
+#### 错误传播规则
+
+1. **Orchestrator → Extract**: 如果 extract 失败，Orchestrator 决定是否重试或回退
+2. **Extract → LLM**: LLM 错误由 Extract 内部处理，返回 fallback 结果
+3. **Summary → DB**: DB 错误向上传播，由调用方决定重试策略
+4. **DailyReview → Session**: 单个 session 失败不影响其他 session
+
+---
+
+## 6.1 Check-in Orchestrator
    198|
    199|职责：
    200|
@@ -499,3 +728,133 @@
    499|生成优化建议日报
    500|```
    501|
+---
+
+## 10. Pilot 阶段监控指标 (Leading Indicators)
+
+### 10.1 核心健康指标
+
+| 指标 | 定义 | 健康阈值 | 告警阈值 |
+|------|------|----------|----------|
+| 周报完成率 | confirmed sessions / initiated sessions | ≥ 70% | < 50% |
+| 平均对话轮数 | messages per session | 3-8 轮 | > 12 轮 |
+| 经理采纳率 | briefs viewed / briefs sent | ≥ 60% | < 40% |
+| 员工负面反馈率 | negative feedback / total feedback | < 10% | > 20% |
+
+### 10.2 技术健康指标
+
+| 指标 | 定义 | 健康阈值 | 告警阈值 |
+|------|------|----------|----------|
+| LLM 提取成功率 | successful extractions / total attempts | ≥ 85% | < 70% |
+| Feishu 消息送达率 | delivered / sent | ≥ 99% | < 95% |
+| Session 超时率 | timed out sessions / total sessions | < 5% | > 15% |
+| API 响应延迟 P95 | 95th percentile response time | < 3s | > 10s |
+
+### 10.3 每日监控仪表盘
+
+```python
+# src/monitoring/metrics.py
+
+from dataclasses import dataclass
+from datetime import date
+
+@dataclass
+class DailyMetrics:
+    """Daily pilot metrics snapshot."""
+    report_date: date
+    
+    # Core metrics
+    sessions_initiated: int
+    sessions_completed: int
+    sessions_expired: int
+    sessions_failed: int
+    
+    avg_messages_per_session: float
+    avg_session_duration_minutes: float
+    
+    briefs_sent: int
+    briefs_viewed: int
+    
+    # Technical metrics
+    llm_calls_total: int
+    llm_calls_failed: int
+    llm_avg_latency_ms: float
+    
+    feishu_messages_sent: int
+    feishu_messages_failed: int
+    
+    @property
+    def completion_rate(self) -> float:
+        if self.sessions_initiated == 0:
+            return 0.0
+        return self.sessions_completed / self.sessions_initiated
+    
+    @property
+    def manager_adoption_rate(self) -> float:
+        if self.briefs_sent == 0:
+            return 0.0
+        return self.briefs_viewed / self.briefs_sent
+    
+    @property
+    def llm_success_rate(self) -> float:
+        if self.llm_calls_total == 0:
+            return 1.0
+        return 1 - (self.llm_calls_failed / self.llm_calls_total)
+
+
+async def collect_daily_metrics(report_date: date) -> DailyMetrics:
+    """Collect metrics for daily monitoring."""
+    return DailyMetrics(
+        report_date=report_date,
+        sessions_initiated=await count_sessions("initiated", report_date),
+        sessions_completed=await count_sessions("confirmed", report_date),
+        sessions_expired=await count_sessions("expired", report_date),
+        sessions_failed=await count_sessions("failed", report_date),
+        avg_messages_per_session=await calc_avg_messages(report_date),
+        avg_session_duration_minutes=await calc_avg_duration(report_date),
+        briefs_sent=await count_briefs("sent", report_date),
+        briefs_viewed=await count_briefs("viewed", report_date),
+        llm_calls_total=await count_llm_calls(report_date),
+        llm_calls_failed=await count_llm_failures(report_date),
+        llm_avg_latency_ms=await calc_llm_latency(report_date),
+        feishu_messages_sent=await count_feishu_sent(report_date),
+        feishu_messages_failed=await count_feishu_failed(report_date),
+    )
+```
+
+### 10.4 告警规则
+
+```python
+# src/monitoring/alerts.py
+
+ALERT_RULES = [
+    {
+        "name": "low_completion_rate",
+        "metric": "completion_rate",
+        "condition": "< 0.5",
+        "severity": "warning",
+        "message": "周报完成率低于 50%，检查用户引导流程"
+    },
+    {
+        "name": "high_session_timeout",
+        "metric": "sessions_expired / sessions_initiated",
+        "condition": "> 0.15",
+        "severity": "warning",
+        "message": "Session 超时率超过 15%，检查超时配置"
+    },
+    {
+        "name": "llm_failure_spike",
+        "metric": "llm_calls_failed / llm_calls_total",
+        "condition": "> 0.3",
+        "severity": "critical",
+        "message": "LLM 失败率超过 30%，检查 API 状态"
+    },
+    {
+        "name": "high_message_count",
+        "metric": "avg_messages_per_session",
+        "condition": "> 12",
+        "severity": "info",
+        "message": "平均对话轮数过多，优化提取逻辑"
+    },
+]
+```

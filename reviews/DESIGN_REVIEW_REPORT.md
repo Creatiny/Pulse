@@ -1,12 +1,11 @@
-# Team Pulse MVP Architecture — Design Review Report
+# Pulse MVP Design Review Report
 
-**Review Date:** 2026-04-18  
-**Review Type:** Multi-dimensional Design Review (gstack)  
+**Review Date:** 2026-04-18
+**Review Scope:** CEO + Engineering perspectives (Security and UX/UI excluded per project scope)
 **Documents Reviewed:**
-- `manager_pulse_mvp_lean_architecture.md` (Architecture Design)
-- `manager_pulse_mvp_prd.md` (PRD)
-
-**Reviewers:** CEO Review, Engineering Review, Design Review, Security Audit (CSO)
+- `docs/manager_pulse_mvp_lean_architecture.md` (Architecture v1.1)
+- `docs/manager_pulse_mvp_prd.md` (PRD)
+- `docs/ENGINEERING_FIXES.md` (Engineering Fixes Spec)
 
 ---
 
@@ -14,271 +13,93 @@
 
 | Dimension | Rating | Key Insight |
 |-----------|--------|-------------|
-| CEO / Strategic | 8.25/10 | Strong MVP with excellent scope discipline; missing competitive analysis |
-| Engineering | 7/10 | Solid foundation but critical gaps in state machine, idempotency, error handling |
-| Design / UX | 3/10 | Severely under-specified user experience; backend-focused, not user-focused |
-| Security | 6/10 | Medium-high risk; missing encryption, auth validation, authorization model |
+| Product Strategy | 6/10 | Clear problem, weak differentiation |
+| Business Value | 5/10 | Manager value defined, employee value vague |
+| MVP Scope | 8/10 | Well-constrained, disciplined |
+| Architecture Soundness | 7/10 | Good decomposition, missing contracts |
+| Data Flow | 6/10 | Flow described, gaps in error paths |
+| State Machine | 5/10 | States defined, transitions incomplete |
+| Edge Cases | 4/10 | Many critical edge cases unaddressed |
+| Idempotency | 3/10 | Critical gaps in webhook and session idempotency |
+| Retry Strategy | 4/10 | Feishu and LLM retry strategies missing |
+| Database Design | 6/10 | Tables defined, missing indexes and constraints |
 
-**Overall Verdict:** The architecture demonstrates excellent scope discipline and correct "build vs buy" decisions. However, it is significantly under-specified in user experience design and has critical security gaps that must be addressed before handling real employee data.
-
----
-
-## Part 1: CEO / Strategic Review
-
-### Ratings
-
-| Dimension | Rating | Summary |
-|-----------|--------|---------|
-| Product Strategy & Business Value | 8/10 | Clear problem-solution fit, strong value proposition |
-| Market Fit & Target User Alignment | 7/10 | Well-defined ICP, but competitive landscape analysis missing |
-| MVP Scope Appropriateness | 9/10 | Excellent scope discipline, correctly identifies what NOT to build |
-| Build vs Buy Decisions | 9/10 | Smart leverage of Feishu and OpenClaw, minimal reinvention |
-
-### Critical Gaps
-
-1. **No competitive landscape analysis** — What Feishu native tools or third-party apps already solve this?
-2. **No pre-build user validation** — Has anyone talked to target managers?
-3. **LLM quality uncertainty** — Has baseline extraction quality been validated?
-4. **Missing operational concerns** — Error handling, rate limiting, data retention
-
-### Top Recommendations (Priority 1)
-
-| # | Recommendation | Effort |
-|---|----------------|--------|
-| 1 | Conduct competitive audit of Feishu ecosystem | 2-3 days |
-| 2 | Interview 5-10 target managers | 1-2 days |
-| 3 | Run 10-20 mock conversations manually to validate LLM quality | 1 day |
-| 4 | Define error handling strategy | 2-4 hours |
-| 5 | Specify database indexes | 1-2 hours |
+**Overall Assessment:** Good scope discipline and build-vs-buy decisions. Critical gaps in idempotency, state machine completeness, and failure handling. ENGINEERING_FIXES.md addresses some issues but P0 items remain unresolved.
 
 ---
 
-## Part 2: Engineering Review
+## P0 Issues (Must Fix Before Implementation)
 
-### Architecture Findings
-
-| ID | Priority | Confidence | Issue |
-|----|----------|------------|-------|
-| 1.1 | P1 | 9/10 | Session state machine needs explicit transition rules |
-| 1.2 | P1 | 8/10 | No idempotency strategy for Feishu message delivery |
-| 1.3 | P2 | 7/10 | Missing error handling for LLM extraction failures |
-| 1.4 | P2 | 8/10 | No retry strategy for Feishu API failures |
-| 1.5 | P2 | 7/10 | Daily review job has no failure isolation |
-| 1.6 | P3 | 6/10 | Missing observability hooks |
-
-### Critical Issues
-
-#### 1. Session State Machine (P1)
-
-The status enum lists states but doesn't define:
-- Valid transitions (can you go from `collecting` back to `initiated`?)
-- Timeout behavior (when does `initiated` become `expired`?)
-- Concurrent message handling (what if user sends 3 messages rapidly?)
-
-**Recommendation:** Add explicit state transition diagram:
-
-```
-initiated --[first_user_message]--> collecting
-collecting --[extraction_complete]--> risk_followup OR summary_confirmation
-risk_followup --[followup_done]--> summary_confirmation
-summary_confirmation --[user_confirms]--> confirmed
-summary_confirmation --[user_rejects]--> collecting (loop back)
-ANY --[timeout: 24h]--> expired
-```
-
-#### 2. Idempotency (P1)
-
-Feishu webhooks can deliver duplicate messages. The design mentions `channel_message_id` but doesn't specify deduplication.
-
-**Recommendation:**
-```sql
--- message_log should have unique constraint
-UNIQUE(channel_message_id)
--- Or use upsert pattern
-| INSERT INTO message_log (...) ON CONFLICT (channel_message_id) DO NOTHING
-| ```
+| ID | Category | Issue | Impact | Recommendation |
+|----|----------|-------|--------|----------------|
+| CEO-1 | Strategy | No explicit kill criteria for MVP | Cannot declare failure, sunk cost escalation | Define hard stop: <50% completion rate after 3 weeks |
+| CEO-2 | Validation | Employee engagement assumption unvalidated | Highest-risk assumption | Run pre-pilot survey or mock test with 3-5 employees |
+| ENG-1 | Concurrency | Concurrent message handling undefined | Race conditions, corrupted state | Implement per-session message queue |
+| ENG-2 | Idempotency | Duplicate Feishu webhook delivery not handled | Duplicate processing | Add unique constraint + upsert pattern |
+| ENG-3 | Idempotency | Webhook idempotency incomplete | Same as ENG-2 | Complete idempotency_key implementation |
 
 ---
 
-## Part 3: Design / UX Review
+## P1 Issues (Should Fix Before Implementation)
 
-### Overall Rating: 3/10
-
-The plan describes backend architecture well but severely under-specifies the user-facing experience.
-
-### Dimension Ratings
-
-| Dimension | Rating | Gap |
-|-----------|--------|-----|
-| User Experience Flow | 3/10 | No user journey, no first-time experience, no progress indication |
-| Information Architecture | 2/10 | No message card layouts, no visual hierarchy |
-| Interaction Design | 3/10 | No interaction states, no timeout/expiration UX, no error recovery |
-| Conversational UX | 4/10 | No persona/tone definition, no off-topic handling |
-
-### Missing UX Specifications
-
-1. **No first-time user experience** — What does the user see when the bot initiates a check-in?
-2. **No progress indication** — How does the user know where they are in the conversation?
-3. **No error states** — What happens when extraction fails? When the user is confused?
-4. **No conversation design** — Tone, persona, handling of off-topic responses
-
----
-
-## Part 4: Security Audit (CSO)
-
-### Overall Risk: MEDIUM-HIGH
-
-### Critical Security Findings
-
-| ID | Severity | Confidence | Category | Issue |
-|----|----------|------------|----------|-------|
-| S1 | HIGH | 9/10 | Information Disclosure | Employee conversation data not encrypted at rest |
-| S2 | HIGH | 9/10 | Auth Failure | Single point of auth failure (Feishu-only) |
-| S3 | HIGH | 9/10 | Broken Access Control | Missing authorization model |
-| S4 | MEDIUM | 8/10 | Information Disclosure | Manager brief exposure risk |
-| S5 | MEDIUM | 8/10 | Privacy | Feishu user cache over-collection |
-
-### Critical Issues
-
-#### S1: Employee Conversation Data Privacy (HIGH)
-
-`message_log.message_text` stores employee conversations without encryption-at-rest specification.
-
-**Impact:** Database breach exposes all historical employee conversations, sensitive work situations, performance concerns.
-
-**Recommendation:**
-1. Encrypt `message_text` and `summary_text` columns using AES-256-GCM
-2. Use envelope encryption with KMS for key management
-3. Document data retention policy and implement automated purging
-
-#### S2: Single Point of Authentication Failure (HIGH)
-
-Architecture relies entirely on Feishu for authentication. No secondary validation.
-
-**Exploit Scenario:** Attacker compromises Feishu bot token → can impersonate any user.
-
-**Recommendation:**
-1. Implement Feishu webhook signature verification (HMAC-SHA256)
-2. Validate `open_id` against Feishu API before sensitive operations
-3. Log all authentication events
-
-#### S3: Missing Authorization Model (HIGH)
-
-Design states "No separate complex permission system" but lacks basic authorization checks:
-- Can user X view session Y?
-- Can manager M view brief for team T?
-
-**Recommendation:**
-1. Implement ownership check: user can only access their own sessions
-2. Implement manager-team relationship check for brief access
-3. Log all authorization failures
-
----
-
-## Consolidated Recommendations
-
-### Priority 1 (Before Implementation)
-
-| # | Area | Recommendation | Effort |
-|---|------|----------------|--------|
-| 1 | Security | Add column-level encryption for message_text and summary_text | 1 day |
-| 2 | Security | Implement Feishu webhook signature verification | 4 hours |
-| 3 | Security | Add basic authorization checks (session ownership, team membership) | 1 day |
-| 4 | Engineering | Define session state machine transitions and timeouts | 4 hours |
-| 5 | Engineering | Add idempotency key (channel_message_id unique constraint) | 2 hours |
-| 6 | CEO | Conduct competitive audit of Feishu ecosystem | 2-3 days |
-| 7 | CEO | Interview 5-10 target managers | 1-2 days |
-
-### Priority 2 (During Implementation)
-
-| # | Area | Recommendation | Effort |
-|---|------|----------------|--------|
-| 8 | Engineering | Add LLM extraction fallback (regex rules) | 4 hours |
-| 9 | Engineering | Add message outbox pattern for retry | 1 day |
-| 10 | Design | Define conversation persona and tone | 2 hours |
-| 11 | Design | Create message card mockups | 1 day |
-| 12 | Security | Add access logging for brief retrieval | 4 hours |
-
-### Priority 3 (Post-MVP)
-
-| # | Area | Recommendation | Effort |
-|---|------|----------------|--------|
-| 13 | Engineering | Add observability (completion rates, latency metrics) | 2 days |
-| 14 | Security | Implement brief expiration and watermarking | 1 day |
-| 15 | CEO | Define business model hypothesis | 1 day |
-
----
-
-## Summary
-
-**What's Good:**
-- Excellent scope discipline — correctly cuts platform-building
-- Smart leverage of Feishu and OpenClaw — minimal reinvention
-- Clear value proposition and target user definition
-- 4-step implementation sequence with validation gates
-
-**What Needs Work:**
-- **Security (Critical):** Encryption, auth validation, authorization model missing
-- **Engineering (Important):** State machine, idempotency, error handling gaps
-- **Design (Significant):** UX severely under-specified — this is a chat product with no conversation design
-- **Validation (Important):** No competitive analysis or pre-build user research
-
-**Recommendation:** Address Priority 1 security and engineering items before handling real employee data. Add UX specifications before implementation begins.
-
-#### 3. LLM Failure Handling (P2)
-
-What happens when LLM returns malformed JSON or times out?
-
-**Recommendation:**
-```
-1. Try LLM extraction with structured output
-2. If timeout/malformed: fall back to regex rule extraction
-3. If still fails: mark extraction_snapshot.missing_fields_json with all fields
-4. Prompt user for manual input on missing fields
-```
-
-### Data Model Issues
+### Product & Strategy (12 issues)
 
 | ID | Issue | Recommendation |
 |----|-------|----------------|
-| 2.1 | `feishu_user_cache` has no sync strategy | Add TTL-based refresh or webhook-triggered update |
-| 2.2 | `message_log` will grow quickly | Add partitioning strategy by created_at |
-| 2.3 | No index specifications | Define indexes before implementation |
+| CEO-3 | Vision lacks competitive moat | Define "unfair advantage" |
+| CEO-4 | Target segment too broad | Pick ONE primary persona |
+| CEO-5 | "Self-optimizing" value prop premature | Define minimum data threshold |
+| CEO-6 | No monetization strategy | Define pilot pricing |
+| CEO-7 | Value quantification missing baseline | Define pre-pilot measurement |
+| CEO-8 | Daily auto-optimization is high-risk | Consider manual review first 2 weeks |
+| CEO-9 | Manager trust unvalidated | Add confidence scores, citations |
+| CEO-10 | No analysis of alternatives | Document switching rationale |
+| CEO-11 | Metrics lack leading indicators | Add response rate, acceptance rate |
+| CEO-12 | Employee value vague | Define measurable employee value |
+
+### Engineering (15 issues)
+
+| ID | Issue | Recommendation |
+|----|-------|----------------|
+| ENG-4 | Missing integration contracts | Define explicit API boundaries |
+| ENG-5 | Extraction failure path incomplete | Complete fallback chain |
+| ENG-6 | Summary rejection flow undefined | Define max 3 rejection cycles |
+| ENG-7 | Failed state recovery missing | Add retry mechanism |
+| ENG-8 | Timeout behavior incomplete | Define timeout per state |
+| ENG-9 | Expired session handling undefined | Return graceful message |
+| ENG-10 | Concurrent sessions undefined | Enforce one active session per user |
+| ENG-11 | Session creation not idempotent | Add idempotency_key |
+| ENG-12 | Feishu retry strategy missing | Implement exponential backoff |
+| ENG-13 | LLM retry strategy missing | Implement backoff + fallback model |
+| ENG-14 | Missing database indexes | Add indexes on key columns |
+| ENG-15 | Missing foreign key constraints | Add FK constraints |
 
 ---
 
-## Part 3: Design / UX Review
+## Strengths
 
-### Overall Rating: 3/10
+1. **Scope Discipline**: Excellent restraint on non-goals
+2. **Build-vs-Buy**: Correct reuse of Feishu, OpenClaw
+3. **Problem Definition**: Clear, validated pain points
+4. **State Machine Foundation**: Status enum and transitions defined
+5. **Data Model**: Core tables identified
 
-The plan describes backend architecture well but severely under-specifies the user-facing experience.
+---
 
-### Dimension Ratings
+## Recommended Next Steps
 
-| Dimension | Rating | Gap |
-|-----------|--------|-----|
-| User Experience Flow | 3/10 | No user journey, no first-time experience, no progress indication |
-| Information Architecture | 2/10 | No message card layouts, no visual hierarchy |
-| Interaction Design | 3/10 | No interaction states, no timeout/expiration UX, no error recovery |
-| Conversational UX | 4/10 | No persona/tone definition, no off-topic handling |
+### Immediate (Before Implementation)
 
-### What a 10 Looks Like
+1. Define kill criteria in PRD
+2. Validate employee engagement with mock test
+3. Complete idempotency design
+4. Define integration contracts
+5. Add message queue for concurrency
 
-#### User Experience Flow (Target: 10/10)
+### Short-term (Week 1-2)
 
-```
-STEP | USER SEES                    | USER FEELS      | DESIGN SPEC
------|------------------------------|-----------------|----------------
-1    | Bot greeting + question card | Curious/safe    | "Hi [Name], time for your weekly check-in..."
-2    | Progress indicator           | Guided          | "Question 1 of 3: What did you accomplish?"
-3    | Acknowledgment + next prompt | Heard           | "Got it. Any blockers?"
-4    | Summary card for review      | In control      | Interactive card with Edit/Confirm buttons
-5    | Confirmation message         | Complete        | "Thanks! Your manager will see this."
-```
-
-#### Information Architecture (Target: 10/10)
-
-```
-MESSAGE CARD HIERARCHY (Summary Confirmation):
-┌─────────────────────────────────────────┐
-│ PRIMARY: Your Weekly Summary            │  <- Bold,
+6. Complete extraction failure fallback
+7. Define timeout behavior
+8. Add database indexes and FKs
+9. Implement retry strategies
+10. Define leading indicators
